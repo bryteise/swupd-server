@@ -1,0 +1,28 @@
+[package]
+name = "swupd"
+version = "0.1.0"
+authors = ["William Douglas <william.douglas@intel.com>"]
+license = "GPL-3.0+"
+description = "swupd"
+readme = "README.md"
+
+[[bin]]
+name = "swupd-server"
+path = "src/bin/swupd-server.rs"
+
+[dependencies]
+clap = "2"
+env_logger = "0.4"
+error-chain = "0.7"
+flate2 = "0.2"
+hyper = "0.10"
+log = "0.3"
+rayon = "0.6"
+ring = "0.6"
+rusqlite = "0.9"
+rust-lzma = "0.2"
+serde = "0.9"
+serde_derive = "0.9"
+serde_json = "0.9"
+tar = "0.4"
+walkdir = "1"
