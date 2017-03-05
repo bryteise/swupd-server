@@ -12,11 +12,13 @@ path = "src/bin/swupd-server.rs"
 
 [dependencies]
 clap = "2"
+colored = "1"
 env_logger = "0.4"
 error-chain = "0.7"
 flate2 = "0.2"
 hyper = "0.10"
 log = "0.3"
+nix = "0.8"
 rayon = "0.6"
 ring = "0.6"
 rusqlite = "0.9"
