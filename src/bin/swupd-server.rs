@@ -4,8 +4,13 @@ extern crate clap;
 extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
+extern crate futures;
+extern crate futures_cpupool;
 #[macro_use]
 extern crate log;
+extern crate nix;
+extern crate rayon;
+extern crate ring;
 extern crate rusqlite;
 #[macro_use]
 extern crate serde_derive;
@@ -14,6 +19,10 @@ extern crate walkdir;
 
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use errors::*;
+use futures::Future;
+use futures_cpupool::{CpuFuture, CpuPool};
+use rayon::prelude::*;
+use ring::digest;
 use rusqlite::Connection;
 use std::fs;
 use std::fs::{File, FileType};
@@ -40,6 +49,13 @@ enum ObjectStatus {
     Experimental,
     Deprecated,
     Deleted
+}
+
+#[derive(Debug)]
+enum PathType {
+    File,
+    Directory,
+    SymbolicLink
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +85,7 @@ struct ChrootConfig {
 struct PathObject {
     id: i64,
     path: PathBuf,
-    path_type: FileType,
+    path_type: PathType,
     parent: PathBuf,
     packages: Option<Vec<i64>>,
     bundles: Option<Vec<i64>>,
@@ -123,11 +139,7 @@ struct Manifest {
 struct Delta {
     id: i64,
     from_version: u32,
-    to_version: u32,
-    from_type: FileType,
-    to_type: FileType,
-    from_object: i64,
-    to_object: i64
+    to_version: u32
 }
 
 #[derive(Debug)]
@@ -211,35 +223,47 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .get_matches()
 }
 
-fn add_entry(dirent: &DirEntry, chroot_config: &ChrootConfig) -> Result<()> {
-//    print!("{:?}", dirent.metadata());
-    bail!("not yet!");
+fn get_symbolic_link_hash(dirent: &DirEntry, context: digest::Context) -> digest::Digest {
+    let target = std::fs::read_link(dirent.path());
+    
+}
+
+fn add_entry(dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection) -> Result<()> {
+    let ctx = digest::Context::new(&digest::SHA256);
+    let hash = if dirent.path_is_symbolic_link() {
+        get_symbolic_link_hash(dirent, ctx)
+    } else if dirent.file_type().is_dir() {
+        get_directory_hash(dirent, ctx)
+    } else if dirent.file_type().is_file() {
+        get_file_hash(dirent, ctx)
+    } else {
+            bail!("Invalid filetype entry: {:?}", dirent.path());
+    };
     Ok(())
 }
 
-fn scan_chroot(chroot: &Path, chroot_config: &ChrootConfig, version: u32) -> Result<()> {
+fn scan_chroot(chroot: &Path, chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     for entry in WalkDir::new(chroot) {
-        let dirent = entry?;
-        add_entry(&dirent, chroot_config)?;
-        //println!("{}", dirent.path().display());
-    }
+            let dirent = entry?;
+            add_entry(&dirent, chroot_config, db)?;
+        });
     Ok(())
 }
 
 fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: &str, content_url: &str, version_url: &str, format: u32) -> Result<Connection> {
+    // Initial version so setup the database
     let conn = if previous_version == 0 {
         if db_path.exists() {
             bail!("Error creating db file, path {:?} already exists", db_path);
         }
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(db_path).chain_err(|| format!("Failed to create new database at: {:?}", db_path))?;
         conn.execute_batch("BEGIN;
                             CREATE TABLE manifests (
-                             id               INTEGER PRIMARY KEY,
+                             version          INTEGER PRIMARY KEY,
                              name             TEXT NOT NULL,
                              content_url      TEXT NOT NULL,
                              version_url      TEXT NOT NULL,
-                             format           INTEGER NOT NULL,
-                             version          INTEGER NOT NULL,
+                             format           INTEGER NOT NULL
                             );
                             CREATE TABLE path_objects (
                              id               INTEGER PRIMARY KEY,
@@ -251,8 +275,8 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              update_version   INTEGER NOT NULL,
                              disk_size        INTEGER NOT NULL,
                              download_size    INTEGER NOT NULL,
-                             hash             INTEGER NOT NULL,
-                             status           INTEGER NOT NULL,
+                             hash             TEXT NOT NULL,
+                             status           INTEGER NOT NULL
                             );
                             CREATE TABLE package_objects (
                              id               INTEGER PRIMARY KEY,
@@ -264,8 +288,8 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              package_version  TEXT NOT NULL,
                              disk_size        INTEGER NOT NULL,
                              download_size    INTEGER NOT NULL,
-                             hash             INTEGER NOT NULL,
-                             status           INTEGER NOT NULL,
+                             hash             TEXT NOT NULL,
+                             status           INTEGER NOT NULL
                             );
                             CREATE TABLE bundle_objects (
                              id               INTEGER PRIMARY KEY,
@@ -276,43 +300,39 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              update_version   INTEGER NOT NULL,
                              disk_size        INTEGER NOT NULL,
                              download_size    INTEGER NOT NULL,
-                             hash             INTEGER NOT NULL,
-                             status           INTEGER NOT NULL,
+                             hash             TEXT NOT NULL,
+                             status           INTEGER NOT NULL
                             );
                             CREATE TABLE deltas (
                              id               INTEGER PRIMARY KEY,
                              from_version     INTEGER NOT NULL,
-                             to_version       INTEGER NOT NULL,
-                             from_type        INTEGER NOT NULL,
-                             to_type          INTEGER NOT NULL,
-                             from_object      INTEGER NOT NULL,
-                             to_object        INTEGER NOT NULL,
+                             to_version       INTEGER NOT NULL
                             );
                             CREATE TABLE renames (
                              id               INTEGER PRIMARY KEY,
-                             from_path        INTEGER NOT NULL,
+                             from_path        TEXT NOT NULL,
                              to_path          INTEGER NOT NULL,
                              from_version     INTEGER NOT NULL,
                              to_version       INTEGER NOT NULL,
-                             from_object      INTEGER NOT NULL,
-                             to_object        INTEGER NOT NULL,
+                             FOREIGN KEY(from_path) REFERENCES path_objects(id),
+                             FOREIGN KEY(to_path) REFERENCES path_objects(id)
                             );
-
-")?;
+                            COMMIT;
+").chain_err(|| "Failed to setup initial database tables")?;
         conn
     } else {
         if ! db_path.exists() {
             bail!("Missing db file {:?}", db_path);
         }
-        Connection::open(db_path)?
+        Connection::open(db_path).chain_err(|| format!("Failed to open existing database at: {:?}", db_path))?
     };
     Ok(conn)
 }
 
 fn load_chroot_config(path: &Path) -> Result<ChrootConfig> {
     let mut buffer = String::new();
-    let _ = File::open(path)?.read_to_string(&mut buffer);
-    let chroot_config: ChrootConfig = serde_json::from_str(&buffer)?;
+    let _ = File::open(path).chain_err(|| format!("Failed to open chroot config file: {:?}", path))?.read_to_string(&mut buffer);
+    let chroot_config: ChrootConfig = serde_json::from_str(&buffer).chain_err(|| format!("Failed to parse chroot config file: {:?}", path))?;
     Ok(chroot_config)
 }
 
@@ -320,16 +340,16 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
     let chroot = Path::new(matches.value_of("chroot").unwrap());
     let chroot_config_path = Path::new(matches.value_of("chrootconfig").unwrap());
     let chroot_config = load_chroot_config(&chroot_config_path)?;
-    let version = matches.value_of("version").unwrap().parse::<u32>()?;
+    let version = matches.value_of("version").unwrap().parse::<u32>().chain_err(|| format!("Unable to parse version from: {}", matches.value_of("version").unwrap()))?;
     let previous_version = match matches.value_of("previousversion") {
         // TODO: add better validation
         None => 0,
-        Some(s) => s.parse::<u32>()?,
+        Some(s) => s.parse::<u32>().chain_err(|| format!("Unable to parse previous version from: {}", s))?,
     };
     let name = matches.value_of("name").unwrap();
     let content_url = matches.value_of("contenturl").unwrap();
     let version_url = matches.value_of("versionurl").unwrap();
-    let format = matches.value_of("format").unwrap().parse::<u32>()?;
+    let format = matches.value_of("format").unwrap().parse::<u32>().chain_err(|| format!("Unable to parse format from: {}", matches.value_of("format").unwrap()))?;
     let db_path = Path::new(matches.value_of("database").unwrap());
     let cert_path = Path::new(matches.value_of("certpath").unwrap());
 
@@ -337,7 +357,7 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
     // can avoid passing certain arguments if already in db
     let db = get_db_connection(db_path, version, previous_version, name, content_url, version_url, format)?;
 
-    scan_chroot(chroot, &chroot_config, version)?;
+    scan_chroot(chroot, &chroot_config, &db, version)?;
 
     Ok(())
 }
@@ -355,20 +375,23 @@ fn process_command(matches: ArgMatches) -> Result<()> {
 
 fn main() {
     env_logger::init().unwrap();
+    if nix::unistd::getuid() != 0 {
+        error!("swupd-server must be run as root");
+        ::std::process::exit(-1);
+    }
     let app = App::new("clr");
     let matches = get_matches(&app);
     if let Err(ref e) = process_command(matches) {
         error!("{}", e);
 
         for e in e.iter().skip(1) {
-            error!("caused by: {}", e);
+            error!("Caused by error: {}", e);
         }
 
         if let Some(backtrace) = e.backtrace() {
             error!("Backtrace: {:?}", backtrace);
         }
 
-        ::std::process::exit(1);
+        ::std::process::exit(-1);
     }
-
 }
