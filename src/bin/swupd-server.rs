@@ -1,4 +1,11 @@
 #![recursion_limit = "1024"]
+//TODO turn off
+#![allow(dead_code)]
+#![allow(unreachable_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
+extern crate byteorder;
 #[macro_use]
 extern crate clap;
 extern crate env_logger;
@@ -8,6 +15,7 @@ extern crate futures;
 extern crate futures_cpupool;
 #[macro_use]
 extern crate log;
+extern crate memmap;
 extern crate nix;
 extern crate rayon;
 extern crate ring;
@@ -17,16 +25,19 @@ extern crate serde_derive;
 extern crate serde_json;
 extern crate walkdir;
 
+use byteorder::{LittleEndian, WriteBytesExt};
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use errors::*;
 use futures::Future;
 use futures_cpupool::{CpuFuture, CpuPool};
+use memmap::{Mmap, Protection};
 use rayon::prelude::*;
 use ring::digest;
 use rusqlite::Connection;
 use std::fs;
 use std::fs::{File, FileType};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
@@ -223,22 +234,77 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .get_matches()
 }
 
-fn get_symbolic_link_hash(dirent: &DirEntry, context: digest::Context) -> digest::Digest {
-    let target = std::fs::read_link(dirent.path());
-    
+trait Hashable {
+    fn get_hash(&self) -> Result<digest::Digest>;
+}
+
+impl Hashable for DirEntry {
+    fn get_hash(&self) -> Result<digest::Digest> {
+        if self.file_type().is_symlink() {
+            get_symbolic_link_hash(self.path())
+        } else if self.file_type().is_dir() {
+            get_directory_hash(self.path())
+        } else if self.file_type().is_file() {
+            get_file_hash(self.path())
+        } else {
+            bail!("Invalid filetype entry: {:?}", self.path());
+        }
+    }
+}
+
+fn get_symbolic_link_hash(path: &Path) -> Result<digest::Digest> {
+    let metadata = path.metadata().chain_err(|| format!("Unable to get metadata for {:?}", path))?;
+    let target = std::fs::read_link(path).chain_err(|| format!("Unable to read symlink {:?}", path))?;
+    let mut ctx = digest::Context::new(&digest::SHA256);
+    let mut mode: Vec<u8> = vec![];
+
+    ctx.update(b"L");
+
+    mode.write_u32::<LittleEndian>(metadata.mode())
+        .chain_err(|| format!("Failed to convert mode to bytes for {:?}", path))?;
+    ctx.update(&mode);
+
+    ctx.update(target.to_str()
+               .ok_or(format!("Unable to convert symlink {:?} target path {:?} to string", path, target))?
+               .as_bytes());
+
+    Ok(ctx.finish())
+}
+
+fn get_directory_hash(path: &Path) -> Result<digest::Digest> {
+    let metadata = path.metadata().chain_err(|| format!("Unable to get metadata for {:?}", path))?;
+    let mut ctx = digest::Context::new(&digest::SHA256);
+    let mut mode: Vec<u8> = vec![];
+
+    ctx.update(b"D");
+
+    mode.write_u32::<LittleEndian>(metadata.mode())
+        .chain_err(|| format!("Failed to convert mode to bytes for {:?}", path))?;
+    ctx.update(&mode);
+
+    Ok(ctx.finish())
+}
+
+fn get_file_hash(path: &Path) -> Result<digest::Digest> {
+    let mmap = Mmap::open_path(path, Protection::Read).chain_err(|| format!("Unable to open mmap for {:?}", path))?;
+    let metadata = path.metadata().chain_err(|| format!("Unable to get metadata for {:?}", path))?;
+    let mut ctx = digest::Context::new(&digest::SHA256);
+    let mut mode: Vec<u8> = vec![];
+
+    ctx.update(b"F");
+
+    mode.write_u32::<LittleEndian>(metadata.mode())
+        .chain_err(|| format!("Failed to convert mode to bytes for {:?}", path))?;
+    ctx.update(&mode);
+
+    let bytes: &[u8] = unsafe { mmap.as_slice() };
+    ctx.update(&bytes);
+
+    Ok(ctx.finish())
 }
 
 fn add_entry(dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection) -> Result<()> {
-    let ctx = digest::Context::new(&digest::SHA256);
-    let hash = if dirent.path_is_symbolic_link() {
-        get_symbolic_link_hash(dirent, ctx)
-    } else if dirent.file_type().is_dir() {
-        get_directory_hash(dirent, ctx)
-    } else if dirent.file_type().is_file() {
-        get_file_hash(dirent, ctx)
-    } else {
-            bail!("Invalid filetype entry: {:?}", dirent.path());
-    };
+    let hash = dirent.get_hash()?;
     Ok(())
 }
 
@@ -246,7 +312,8 @@ fn scan_chroot(chroot: &Path, chroot_config: &ChrootConfig, db: &Connection, ver
     for entry in WalkDir::new(chroot) {
             let dirent = entry?;
             add_entry(&dirent, chroot_config, db)?;
-        });
+    };
+    bail!("not yet");
     Ok(())
 }
 

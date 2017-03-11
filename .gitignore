@@ -10,3 +10,6 @@ test/functional/*/*.trs
 test/functional/*/logs/
 test/functional/*/web-dir/
 test-suite.log
+tests/10
+tests/*.db
+tests/*.tar
