@@ -50,11 +50,12 @@ mod errors {
             ParseInt(::std::num::ParseIntError) #[doc = "Error parsing an integer"];
             Sql(::rusqlite::Error) #[doc = "Error with SQLite interaction"];
             WalkDirPath(::walkdir::Error) #[doc = "Error reading path"];
+            StripPrefix(::std::path::StripPrefixError) #[doc = "Error removing path prefix"];
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 enum ObjectStatus {
     Active,
     Experimental,
@@ -62,7 +63,7 @@ enum ObjectStatus {
     Deleted
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum PathType {
     File,
     Directory,
@@ -74,7 +75,6 @@ struct Package {
     name: String,
     requires: Vec<String>,
     version: String,
-    status: ObjectStatus,
     paths: Vec<PathBuf>
 }
 
@@ -234,6 +234,62 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .get_matches()
 }
 
+fn add_chroot_config_entries(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    let mut inserts: Vec<String> = vec![];
+    inserts.push("BEGIN;".to_string());
+    let pkgs = &chroot_config.packages;
+    for package in pkgs {
+        let line = format!("INSERT INTO package_objects(name, update_version, package_version, status) VALUES ('{}', {}, '{}', {});",
+                           package.name,
+                           version,
+                           package.version,
+                           ObjectStatus::Active as u32);
+        inserts.push(line);
+    }
+    match chroot_config.bundles {
+        Some(ref bundles) => {
+            for bundle in bundles {
+                let line = format!("INSERT INTO bundle_objects(name, update_version, status) VALUES ('{}', {}, {});",
+                                   bundle.name,
+                                   version,
+                                   bundle.status as u32);
+                inserts.push(line);
+            };
+        },
+        None => (),
+    };
+
+    inserts.push("COMMIT;".to_string());
+    println!("{:?}", inserts);
+    db.execute_batch(&inserts.join("")).chain_err(|| "Failed to add packages and bundles to db")?;
+    Ok(())
+}
+
+fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+
+}
+
+fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    bail!("x");
+}
+
+fn add_bundle_packages(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    bail!("x");
+}
+
+fn add_bundle_includes(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    bail!("x");
+}
+
+fn update_db_with_config(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    add_chroot_config_entries(chroot_config, db, version)?;
+    add_package_requires(chroot_config, db, version)?;
+    add_package_bundles(chroot_config, db, version)?;
+    add_bundle_packages(chroot_config, db, version)?;
+    add_bundle_includes(chroot_config, db, version)?;
+    Ok(())
+}
+
 trait Hashable {
     fn get_hash(&self) -> Result<digest::Digest>;
 }
@@ -253,16 +309,10 @@ impl Hashable for DirEntry {
 }
 
 fn get_symbolic_link_hash(path: &Path) -> Result<digest::Digest> {
-    let metadata = path.metadata().chain_err(|| format!("Unable to get metadata for {:?}", path))?;
     let target = std::fs::read_link(path).chain_err(|| format!("Unable to read symlink {:?}", path))?;
     let mut ctx = digest::Context::new(&digest::SHA256);
-    let mut mode: Vec<u8> = vec![];
 
     ctx.update(b"L");
-
-    mode.write_u32::<LittleEndian>(metadata.mode())
-        .chain_err(|| format!("Failed to convert mode to bytes for {:?}", path))?;
-    ctx.update(&mode);
 
     ctx.update(target.to_str()
                .ok_or(format!("Unable to convert symlink {:?} target path {:?} to string", path, target))?
@@ -303,15 +353,29 @@ fn get_file_hash(path: &Path) -> Result<digest::Digest> {
     Ok(ctx.finish())
 }
 
-fn add_entry(dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection) -> Result<()> {
+fn add_entry(prefix: &Path, dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection) -> Result<()> {
     let hash = dirent.get_hash()?;
+    let path = Path::new("/").join(dirent.path().strip_prefix(prefix)?);
+    let path_type = if dirent.file_type().is_symlink() {
+        PathType::SymbolicLink
+    } else if dirent.file_type().is_dir() {
+        PathType::Directory
+    } else if dirent.file_type().is_file() {
+        PathType::File
+    } else {
+        bail!("Invalid filetype entry: {:?}", dirent.path());
+    };
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    bail!("x");
+//    let packages = 
     Ok(())
 }
 
 fn scan_chroot(chroot: &Path, chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    update_db_with_config(chroot_config, db, version)?;
     for entry in WalkDir::new(chroot) {
             let dirent = entry?;
-            add_entry(&dirent, chroot_config, db)?;
+            add_entry(chroot, &dirent, chroot_config, db)?;
     };
     bail!("not yet");
     Ok(())
@@ -336,13 +400,13 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              id               INTEGER PRIMARY KEY,
                              path             TEXT NOT NULL,
                              path_type        INTEGER NOT NULL,
-                             parent           TEXT,
+                             parent           TEXT NOT NULL,
                              packages         BLOB,
                              bundles          BLOB,
                              update_version   INTEGER NOT NULL,
-                             disk_size        INTEGER NOT NULL,
-                             download_size    INTEGER NOT NULL,
-                             hash             TEXT NOT NULL,
+                             disk_size        INTEGER,
+                             download_size    INTEGER,
+                             hash             TEXT,
                              status           INTEGER NOT NULL
                             );
                             CREATE TABLE package_objects (
@@ -353,9 +417,9 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              bundles          BLOB,
                              update_version   INTEGER NOT NULL,
                              package_version  TEXT NOT NULL,
-                             disk_size        INTEGER NOT NULL,
-                             download_size    INTEGER NOT NULL,
-                             hash             TEXT NOT NULL,
+                             disk_size        INTEGER,
+                             download_size    INTEGER,
+                             hash             TEXT,
                              status           INTEGER NOT NULL
                             );
                             CREATE TABLE bundle_objects (
@@ -365,15 +429,17 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              includes         BLOB,
                              paths            BLOB,
                              update_version   INTEGER NOT NULL,
-                             disk_size        INTEGER NOT NULL,
-                             download_size    INTEGER NOT NULL,
-                             hash             TEXT NOT NULL,
+                             disk_size        INTEGER,
+                             download_size    INTEGER,
+                             hash             TEXT,
                              status           INTEGER NOT NULL
                             );
                             CREATE TABLE deltas (
                              id               INTEGER PRIMARY KEY,
                              from_version     INTEGER NOT NULL,
-                             to_version       INTEGER NOT NULL
+                             to_version       INTEGER NOT NULL,
+                             download_size    INTEGER,
+                             hash             TEXT
                             );
                             CREATE TABLE renames (
                              id               INTEGER PRIMARY KEY,

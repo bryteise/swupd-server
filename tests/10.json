@@ -6,7 +6,6 @@
                 "filesystem"
             ],
             "version": "4.4-36",
-            "status": "Active",
             "paths": [
                 "/usr/bin/bash",
                 "/usr/bin/sh"
@@ -16,7 +15,6 @@
             "name": "filesystem",
             "requires": [],
             "version": "3.0.14-136",
-            "status": "Active",
             "paths": [
                 "/bin",
                 "/boot",
@@ -75,6 +73,17 @@
                 "/var/log",
                 "/var/spool",
                 "/var/tmp"
+            ]
+        }
+    ],
+    "bundles": [
+        {
+            "name": "os-core",
+            "status": "Active",
+            "includes": [],
+            "packages": [
+                "bash",
+                "filesystem"
             ]
         }
     ]
