@@ -89,56 +89,54 @@ struct Bundle {
 #[derive(Debug, Deserialize)]
 struct ChrootConfig {
     packages: Vec<Package>,
-    bundles: Option<Vec<Bundle>>
+    bundles: Vec<Bundle>
 }
 
 #[derive(Debug)]
 struct PathObject {
-    id: i64,
-    path: PathBuf,
+    id: u32,
+    path: String,
     path_type: PathType,
-    parent: PathBuf,
-    packages: Option<Vec<i64>>,
-    bundles: Option<Vec<i64>>,
+    parent: Option<String>,
+    packages: Option<Vec<u32>>,
+    bundles: Option<Vec<u32>>,
     update_version: u32,
-    disk_size: u32,
-    download_size: u32,
+    disk_size: Option<u32>,
+    download_size: Option<u32>,
     hash: String,
     status: ObjectStatus
 }
 
 #[derive(Debug)]
 struct PackageObject {
-    id: i64,
+    id: u32,
     name: String,
-    paths: Vec<i64>,
-    requires: Option<Vec<i64>>,
-    bundles: Option<Vec<i64>>,
+    paths: Vec<u32>,
+    requires: Option<Vec<u32>>,
+    bundles: Option<Vec<u32>>,
     update_version: u32,
     package_version: String,
-    disk_size: u32,
-    download_size: u32,
-    hash: String,
+    disk_size: Option<u32>,
+    download_size: Option<u32>,
     status: ObjectStatus
 }
 
 #[derive(Debug)]
 struct BundleObject {
-    id: i64,
+    id: u32,
     name: String,
-    packages: Vec<i64>,
-    includes: Option<Vec<i64>>,
-    paths: Vec<i64>,
+    packages: Vec<u32>,
+    includes: Option<Vec<u32>>,
+    paths: Vec<u32>,
     update_version: u32,
-    disk_size: u32,
-    download_size: u32,
-    hash: String,
+    disk_size: Option<u32>,
+    download_size: Option<u32>,
     status: ObjectStatus
 }
 
 #[derive(Debug)]
 struct Manifest {
-    id: i64,
+    id: u32,
     name: String,
     content_url: String,
     version_url: String,
@@ -148,16 +146,18 @@ struct Manifest {
 
 #[derive(Debug)]
 struct Delta {
-    id: i64,
+    id: u32,
+    path_id: u32,
     from_version: u32,
-    to_version: u32
+    to_version: u32,
+    hash: String
 }
 
 #[derive(Debug)]
 struct Rename {
-    id: i64,
-    from_path: i64,
-    to_path: i64,
+    id: u32,
+    from_path: u32,
+    to_path: u32,
     from_version: u32,
     to_version: u32,
 }
@@ -234,11 +234,11 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .get_matches()
 }
 
+// Insert initial packag and bundle details
 fn add_chroot_config_entries(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     let mut inserts: Vec<String> = vec![];
     inserts.push("BEGIN;".to_string());
-    let pkgs = &chroot_config.packages;
-    for package in pkgs {
+    for package in &chroot_config.packages {
         let line = format!("INSERT INTO package_objects(name, update_version, package_version, status) VALUES ('{}', {}, '{}', {});",
                            package.name,
                            version,
@@ -246,37 +246,53 @@ fn add_chroot_config_entries(chroot_config: &ChrootConfig, db: &Connection, vers
                            ObjectStatus::Active as u32);
         inserts.push(line);
     }
-    match chroot_config.bundles {
-        Some(ref bundles) => {
-            for bundle in bundles {
-                let line = format!("INSERT INTO bundle_objects(name, update_version, status) VALUES ('{}', {}, {});",
-                                   bundle.name,
-                                   version,
-                                   bundle.status as u32);
-                inserts.push(line);
-            };
-        },
-        None => (),
-    };
-
+    for bundle in &chroot_config.bundles {
+        let line = format!("INSERT INTO bundle_objects(name, update_version, status) VALUES ('{}', {}, {});",
+                           bundle.name,
+                           version,
+                           bundle.status as u32);
+        inserts.push(line);
+    }
     inserts.push("COMMIT;".to_string());
-    println!("{:?}", inserts);
+
     db.execute_batch(&inserts.join("")).chain_err(|| "Failed to add packages and bundles to db")?;
     Ok(())
 }
 
+// Update packages with their required packages
 fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
-
+    let mut stmt = db.prepare("SELECT id FROM package_objects WHERE name in (:names)").chain_err(|| "Unable to create statement for adding package requires")?;
+    for package in &chroot_config.packages {
+        if package.requires.len() == 0 {
+            continue;
+        }
+        let names = package.requires.join(",");
+        let pkg_id_rows = stmt.query_map_named(&[(":names", package.name)], |row: &rusqlite::Row -> u32 { row.get(0) })
+            .chain_err(|| "Unable to run query to get id for package {}", package.name)?;
+        let pkg_id = pkg_id_rows
+        let rows = stmt.query_map_named(&[(":names", &names)], |row: &rusqlite::Row| -> u32 { row.get(0) })
+            .chain_err(|| "Unable to run query to get ids for adding package requires")?;
+        let mut inserts: Vec<String> = vec![];
+        for row in rows {
+            let line = format!("INSERT INTO package_packages (package_requires_id, package_required_id) VALUES ('{}', {});",
+            inserts.push(row.chain_err(|| "Unable to get id for adding package requires")?);
+        }
+        
+    }
+    bail!("wait");
 }
 
+// Update packages with bundles they are in
 fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     bail!("x");
 }
 
+// Update bundles with packages they contain
 fn add_bundle_packages(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     bail!("x");
 }
 
+// Update bundles with bundles they include
 fn add_bundle_includes(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     bail!("x");
 }
@@ -389,6 +405,7 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
         }
         let conn = Connection::open(db_path).chain_err(|| format!("Failed to create new database at: {:?}", db_path))?;
         conn.execute_batch("BEGIN;
+                            PRAGMA foreign_keys = ON;
                             CREATE TABLE manifests (
                              version          INTEGER PRIMARY KEY,
                              name             TEXT NOT NULL,
@@ -400,9 +417,7 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                              id               INTEGER PRIMARY KEY,
                              path             TEXT NOT NULL,
                              path_type        INTEGER NOT NULL,
-                             parent           TEXT NOT NULL,
-                             packages         BLOB,
-                             bundles          BLOB,
+                             parent           INTEGER REFERENCES path_objects(id),
                              update_version   INTEGER NOT NULL,
                              disk_size        INTEGER,
                              download_size    INTEGER,
@@ -412,30 +427,23 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                             CREATE TABLE package_objects (
                              id               INTEGER PRIMARY KEY,
                              name             TEXT NOT NULL,
-                             paths            BLOB,
-                             requires         BLOB,
-                             bundles          BLOB,
                              update_version   INTEGER NOT NULL,
                              package_version  TEXT NOT NULL,
                              disk_size        INTEGER,
                              download_size    INTEGER,
-                             hash             TEXT,
                              status           INTEGER NOT NULL
                             );
                             CREATE TABLE bundle_objects (
                              id               INTEGER PRIMARY KEY,
                              name             TEXT NOT NULL,
-                             packages         BLOB,
-                             includes         BLOB,
-                             paths            BLOB,
                              update_version   INTEGER NOT NULL,
                              disk_size        INTEGER,
                              download_size    INTEGER,
-                             hash             TEXT,
                              status           INTEGER NOT NULL
                             );
                             CREATE TABLE deltas (
                              id               INTEGER PRIMARY KEY,
+                             path_id          REFERENCES path_objects(id),
                              from_version     INTEGER NOT NULL,
                              to_version       INTEGER NOT NULL,
                              download_size    INTEGER,
@@ -443,12 +451,35 @@ fn get_db_connection(db_path: &Path, version: u32, previous_version: u32, name: 
                             );
                             CREATE TABLE renames (
                              id               INTEGER PRIMARY KEY,
-                             from_path        TEXT NOT NULL,
-                             to_path          INTEGER NOT NULL,
+                             from_path        REFERENCES path_objects(id),
+                             to_path          REFERENCES path_objects(id),
                              from_version     INTEGER NOT NULL,
-                             to_version       INTEGER NOT NULL,
-                             FOREIGN KEY(from_path) REFERENCES path_objects(id),
-                             FOREIGN KEY(to_path) REFERENCES path_objects(id)
+                             to_version       INTEGER NOT NULL
+                            );
+                            CREATE TABLE path_packages (
+                             path_id          INTEGER NOT NULL,
+                             package_id       INTEGER NOT NULL,
+                             PRIMARY KEY(path_id, package_id)
+                            );
+                            CREATE TABLE path_bundles (
+                             path_id          INTEGER NOT NULL,
+                             bundle_id        INTEGER NOT NULL,
+                             PRIMARY KEY(path_id, bundle_id)
+                            );
+                            CREATE TABLE package_packages (
+                             package_requires_id INTEGER NOT NULL,
+                             package_required_id  INTEGER NOT NULL,
+                             PRIMARY KEY(package_requires_id, package_required_id)
+                            );
+                            CREATE TABLE package_bundles (
+                             package_id       INTEGER NOT NULL,
+                             bundle_id        INTEGER NOT NULL,
+                             PRIMARY KEY(package_id, bundle_id)
+                            );
+                            CREATE TABLE bundle_bundles (
+                             bundle_includes_id INTEGER NOT NULL,
+                             bundle_included_id INTEGER NOT NULL,
+                             PRIMARY KEY(bundle_includes_id, bundle_included_id)
                             );
                             COMMIT;
 ").chain_err(|| "Failed to setup initial database tables")?;
