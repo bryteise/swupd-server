@@ -34,6 +34,8 @@ use memmap::{Mmap, Protection};
 use rayon::prelude::*;
 use ring::digest;
 use rusqlite::Connection;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs;
 use std::fs::{File, FileType};
 use std::io::Read;
@@ -234,7 +236,30 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .get_matches()
 }
 
-// Insert initial packag and bundle details
+// // Get path_objects from db
+// fn get_path_objects(fields: &Vec<&str>, content: &HashMap<&str, &str>) -> Result<Vec<PathObject>> {
+//     let mut checks: Vec<String> = Vec::new();
+//     for field in fields {
+//         checks.push(format!("{} in ({})", field, query[field]));
+//     }
+//     let query = format!("SELECT (id, path, path_type, parent, update_version, disk_size, download_size, hash, status) FROM path_objects WHERE {}", checks.join(" AND "));
+//     let mut stmt = db.prepare(&query).chain_err(|| format!("Error creation get path_object statement {}", &query))?;
+//     let mut rows = stmt.query(&[]).chain_err(|| format!("Error running get path_object statement {}", &query))?;
+//     let paths: Vec<PathObject> = Vec::new();
+//     while let Some(rrow) = rows.next() {
+//         let row = rrow.chain_err(|| "Error reading package_object query row");
+//         let pkg = PackageObject {
+//             id = row.get(0),
+//             path = row.get(1),
+//             path_type = row.get(2) as PathType,
+//             parent = Path::new(row.get(3)),
+//             update_version = row.get(4),
+            
+//         };
+//     }
+// }
+
+// Insert initial package and bundle details
 fn add_chroot_config_entries(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     let mut inserts: Vec<String> = vec![];
     inserts.push("BEGIN;".to_string());
@@ -261,47 +286,97 @@ fn add_chroot_config_entries(chroot_config: &ChrootConfig, db: &Connection, vers
 
 // Update packages with their required packages
 fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
-    let mut stmt = db.prepare("SELECT id FROM package_objects WHERE name in (:names)").chain_err(|| "Unable to create statement for adding package requires")?;
+    let vstring = version.to_string();
+    let mut stmt_pkg = db.prepare("SELECT id FROM package_objects WHERE name = :name AND update_version = :version").chain_err(|| "Unable to create statement for adding package requires")?;
+
     for package in &chroot_config.packages {
         if package.requires.len() == 0 {
             continue;
         }
-        let names = package.requires.join(",");
-        let pkg_id_rows = stmt.query_map_named(&[(":names", package.name)], |row: &rusqlite::Row -> u32 { row.get(0) })
-            .chain_err(|| "Unable to run query to get id for package {}", package.name)?;
-        let pkg_id = pkg_id_rows
-        let rows = stmt.query_map_named(&[(":names", &names)], |row: &rusqlite::Row| -> u32 { row.get(0) })
+
+        let names = package.requires.join("','");
+        let mut stmt_req = db.prepare(&format!("SELECT id FROM package_objects WHERE name in ('{}') AND update_version = :version", names)).chain_err(|| "Unable to create statement for adding package requires")?;
+        let mut pkg_id_rows = stmt_pkg.query_map_named(&[(":name", &package.name), (":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
+            .chain_err(|| format!("Unable to run query to get id for package {}", &package.name))?;
+        let pkg_id = pkg_id_rows.nth(0).ok_or("Invalid DB")?.chain_err(|| format!("Package {} version {} missing after insert", &package.name, &vstring))?;
+        let rows = stmt_req.query_map_named(&[(":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
             .chain_err(|| "Unable to run query to get ids for adding package requires")?;
-        let mut inserts: Vec<String> = vec![];
+
+        let mut inserts: Vec<String> = vec!["BEGIN;".to_string()];
         for row in rows {
+            let req_id = row.chain_err(|| format!("Unable to a get row id from a package required by {}", &package.name))?;
             let line = format!("INSERT INTO package_packages (package_requires_id, package_required_id) VALUES ('{}', {});",
-            inserts.push(row.chain_err(|| "Unable to get id for adding package requires")?);
+                               &pkg_id, &req_id);
+            inserts.push(line);
         }
-        
+        inserts.push("COMMIT;".to_string());
+        db.execute_batch(&inserts.join("")).chain_err(|| format!("Failed to add packages requirements for {} to db", &package.name))?;
     }
-    bail!("wait");
+    Ok(())
 }
 
-// Update packages with bundles they are in
+// Match packages with the bundles they are in
 fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
-    bail!("x");
-}
+    let vstring = version.to_string();
+    let mut stmt_bdl = db.prepare("SELECT id FROM bundle_objects WHERE name = :name AND update_version = :version").chain_err(|| "Unable to create statement for adding package and bundle relations")?;
 
-// Update bundles with packages they contain
-fn add_bundle_packages(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
-    bail!("x");
+    for bundle in &chroot_config.bundles {
+        let names = bundle.packages.join("','");
+        let mut stmt_inc = db.prepare(&format!("SELECT id FROM package_objects WHERE name in ('{}') AND update_version = :version", names)).chain_err(|| "Unable to create statement for adding package and bundle relations")?;
+        let mut bdl_id_rows = stmt_bdl.query_map_named(&[(":name", &bundle.name), (":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
+            .chain_err(|| format!("Unable to run query to get id for bundle {}", &bundle.name))?;
+        let bdl_id = bdl_id_rows.nth(0).ok_or("Invalid DB")?.chain_err(|| format!("Bundle {} version {} missing after insert", &bundle.name, &vstring))?;
+        let rows = stmt_inc.query_map_named(&[(":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
+            .chain_err(|| "Unable to run query to get ids for adding bundle packages")?;
+
+        let mut inserts: Vec<String> = vec!["BEGIN;".to_string()];
+        for row in rows {
+            let pkg_id = row.chain_err(|| format!("Unable to get a row id from a package required by {}", &bundle.name))?;
+            let line = format!("INSERT INTO package_bundles (package_id, bundle_id) VALUES ('{}', {});",
+                               &pkg_id, &bdl_id);
+            inserts.push(line);
+        }
+        inserts.push("COMMIT;".to_string());
+        db.execute_batch(&inserts.join("")).chain_err(|| format!("Failed to add packages and bundle relations for {} to db", &bundle.name))?;
+    }
+    Ok(())
 }
 
 // Update bundles with bundles they include
 fn add_bundle_includes(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
-    bail!("x");
+    let vstring = version.to_string();
+    let mut stmt_bdl = db.prepare("SELECT id FROM bundle_objects WHERE name = :name AND update_version = :version").chain_err(|| "Unable to create statement for adding bundle includes")?;
+
+    for bundle in &chroot_config.bundles {
+        if bundle.includes.len() == 0 {
+            continue;
+        }
+
+        let names = bundle.includes.join("','");
+        let mut stmt_inc = db.prepare(&format!("SELECT id FROM bundle_objects WHERE name in ('{}') AND update_version = :version", names)).chain_err(|| "Unable to create statement for adding bundle includes")?;
+        let mut bdl_id_rows = stmt_bdl.query_map_named(&[(":name", &bundle.name), (":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
+            .chain_err(|| format!("Unable to run query to get id for bundle {}", &bundle.name))?;
+        let bdl_id = bdl_id_rows.nth(0).ok_or("Invalid DB")?.chain_err(|| format!("Bundle {} version {} missing after insert", &bundle.name, &vstring))?;
+        let rows = stmt_inc.query_map_named(&[(":version", &vstring)], |row: &rusqlite::Row| -> u32 { row.get(0)} )
+            .chain_err(|| "Unable to run query to get ids for adding bundle includes")?;
+
+        let mut inserts: Vec<String> = vec!["BEGIN;".to_string()];
+        for row in rows {
+            let inc_id = row.chain_err(|| format!("Unable to a get row id from a bundle included by {}", &bundle.name))?;
+            let line = format!("INSERT INTO bundle_bundles (bundle_includes_id, bundle_included_id) VALUES ('{}', '{}');",
+                               &bdl_id, &inc_id);
+            inserts.push(line);
+        }
+        inserts.push("COMMIT;".to_string());
+        db.execute_batch(&inserts.join("")).chain_err(|| format!("Failed to add bundle includes for {} to db", &bundle.name))?;
+    }
+    Ok(())
 }
 
 fn update_db_with_config(chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     add_chroot_config_entries(chroot_config, db, version)?;
     add_package_requires(chroot_config, db, version)?;
     add_package_bundles(chroot_config, db, version)?;
-    add_bundle_packages(chroot_config, db, version)?;
     add_bundle_includes(chroot_config, db, version)?;
     Ok(())
 }
@@ -369,9 +444,8 @@ fn get_file_hash(path: &Path) -> Result<digest::Digest> {
     Ok(ctx.finish())
 }
 
-fn add_entry(prefix: &Path, dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection) -> Result<()> {
+fn add_entry(path: &Path, dirent: &DirEntry, chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
     let hash = dirent.get_hash()?;
-    let path = Path::new("/").join(dirent.path().strip_prefix(prefix)?);
     let path_type = if dirent.file_type().is_symlink() {
         PathType::SymbolicLink
     } else if dirent.file_type().is_dir() {
@@ -382,17 +456,47 @@ fn add_entry(prefix: &Path, dirent: &DirEntry, chroot_config: &ChrootConfig, db:
         bail!("Invalid filetype entry: {:?}", dirent.path());
     };
     let parent = path.parent().unwrap_or(Path::new("/"));
-    bail!("x");
-//    let packages = 
+    let pthstr = path.to_str().expect("Path not valid unicode");
+    let prtstr = parent.to_str().expect("Path not valid unicode");
+    db.execute("INSERT INTO path_objects (path, path_type, parent, update_version, hash, status) VALUES (?, ?, ?, ?, ?, ?);",
+               &[&pthstr,
+                 &(path_type as u32),
+                 &prtstr,
+                 &version,
+                 &hash.as_ref(),
+                 &(ObjectStatus::Active as u32)])
+        .chain_err(|| format!("Unable to insert path {:?} into db", path))?;
     Ok(())
 }
 
 fn scan_chroot(chroot: &Path, chroot_config: &ChrootConfig, db: &Connection, version: u32) -> Result<()> {
+    let mut path_map: HashMap<&str, usize> = HashMap::new();
+    for package in &chroot_config.packages {
+        for path in &package.paths {
+            path_map.insert(path.to_str().expect(&format!("Path {:?} in config not unicode", path)), 0);
+        }
+    }
+
     update_db_with_config(chroot_config, db, version)?;
     for entry in WalkDir::new(chroot) {
-            let dirent = entry?;
-            add_entry(chroot, &dirent, chroot_config, db)?;
+        let dirent = entry?;
+        let path = Path::new("/").join(dirent.path().strip_prefix(chroot)?);
+        let pstr = path.to_str().expect(&format!("Path {:?} in chroot not unicode", path));
+        match path_map.get_mut(pstr) {
+            Some(count) => *count = 1,
+            None => {
+                if !dirent.file_type().is_dir() {
+                    bail!(format!("Path {:?} found non directory in chroot path not in chroot configuration", pstr));
+                }
+            }
+        }
+        add_entry(&path, &dirent, chroot_config, db, version)?;
     };
+    for (tmp, count) in &path_map {
+        if *count == 0 {
+            bail!(format!("Path {} found in chroot configuration but not in path", tmp));
+        }
+    }
     bail!("not yet");
     Ok(())
 }

@@ -85,6 +85,16 @@
                 "bash",
                 "filesystem"
             ]
+        },
+        {
+            "name": "os-test",
+            "status": "Experimental",
+            "includes": [
+                "os-core"
+            ],
+            "packages": [
+                "bash"
+            ]
         }
     ]
 }
