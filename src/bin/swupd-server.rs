@@ -160,11 +160,11 @@ struct BundleObject {
 
 #[derive(Debug)]
 struct Manifest {
-    id: i64,
     name: String,
     content_url: String,
     version_url: String,
     format: i64,
+    db_format: i64,
     version: i64,
 }
 
@@ -271,7 +271,6 @@ fn get_path_objects<'a>(db: &Connection,
     let query = format!("SELECT id, path, path_type, parent, update_version, \
                          disk_size, download_size, hash, status FROM path_objects WHERE {}",
                         checks.join(" AND "));
-    println!("query == {}", query);
     let mut stmt = db.prepare(&query)
         .chain_err(|| format!("Error creation get path_object statement {}", &query))?;
     let mut rows = stmt.query(&[])
@@ -311,7 +310,6 @@ fn get_package_objects<'a>(db: &Connection,
     let query = format!("SELECT id, name, update_version, package_version, disk_size, \
                          download_size, status FROM path_objects WHERE {}",
                         checks.join(" AND "));
-    println!("query == {}", query);
     let mut stmt = db.prepare(&query)
         .chain_err(|| format!("Error creation get package_object statement {}", &query))?;
     let mut rows = stmt.query(&[])
@@ -349,7 +347,6 @@ fn get_bundle_objects<'a>(db: &Connection,
     let query = format!("SELECT id, name, update_version, \
                          disk_size, download_size, status FROM bundle_objects WHERE {}",
                         checks.join(" AND "));
-    println!("query == {}", query);
     let mut stmt = db.prepare(&query)
         .chain_err(|| format!("Error creation get bundle_object statement {}", &query))?;
     let mut rows = stmt.query(&[])
@@ -742,7 +739,10 @@ fn add_entry(path: &Path,
 fn chroot_to_db(chroot: &Path,
                 chroot_config: &ChrootConfig,
                 db: &Connection,
-                version: i64)
+                version: i64,
+                previous_version: i64,
+                format: i64,
+                db_path: &Path)
                 -> Result<()> {
     let mut path_map: HashMap<&str, usize> = HashMap::new();
     for package in &chroot_config.packages {
@@ -783,7 +783,12 @@ fn chroot_to_db(chroot: &Path,
     Ok(())
 }
 
-fn create_db(db: &Connection) -> Result<()> {
+fn create_db(db: &Connection,
+             version: i64,
+             name: &str,
+             content_url: &str,
+             version_url: &str,
+             format: i64) -> Result<()> {
     db.execute_batch("BEGIN; PRAGMA foreign_keys = ON; \
                       \
                       CREATE TABLE manifests ( \
@@ -863,6 +868,15 @@ fn create_db(db: &Connection) -> Result<()> {
                       PRIMARY KEY(bundle_includes_id, bundle_included_id)); \
                       COMMIT;")
         .chain_err(|| "Failed to setup initial database tables")?;
+    db.execute("INSERT INTO manifests (version, name, content_url, version_url, db_format, format) VALUES (?, ?, ?, ?, ?, ?);",
+               &[&version,
+                 &name,
+                 &content_url,
+                 &version_url,
+                 &DB_FORMAT,
+                 &format])
+        .chain_err(|| format!("Unable to setup manifest table"))?;
+
     Ok(())
 }
 
@@ -870,6 +884,22 @@ fn make_pre_bump_db(db_path: &Path) -> Result<()> {
     let pre_bump: &Path = &db_path.with_extension("pre-bump");
     fs::rename(db_path, pre_bump).chain_err(|| format!("Failed to move db to pre-bump file at: {:?}", &pre_bump))?;
     Ok(())
+}
+
+fn remove_old_db(db_path: &Path) -> Result<()> {
+    fs::remove_file(db_path).chain_err(|| format!("Failed to remove old db file at: {:?}", db_path))?;
+    Ok(())
+}
+
+fn get_manifest(db: &Connection) -> Result<Manifest> {
+    db.query_row(&format!("SELECT * FROM manifests"), &[], |row| {
+        Manifest { version: row.get(0),
+                   name: row.get(1),
+                   content_url: row.get(2),
+                   version_url: row.get(3),
+                   db_format: row.get(4),
+                   format: row.get(5) }
+    }).chain_err(|| format!("Unable to run query to get db_format"))
 }
 
 fn get_db_connection(db_path: &Path,
@@ -887,7 +917,7 @@ fn get_db_connection(db_path: &Path,
         }
         let conn = Connection::open(db_path)
             .chain_err(|| format!("Failed to create new database at: {:?}", db_path))?;
-        create_db(&conn)?;
+        create_db(&conn, version, name, content_url, version_url, format)?;
         conn
     } else {
         if !db_path.exists() {
@@ -895,13 +925,16 @@ fn get_db_connection(db_path: &Path,
         }
         let conn = Connection::open(db_path)
             .chain_err(|| format!("Failed to open existing database at: {:?}", db_path))?;
-        let db_format_row = 1;
-        let db_format = 2;
-        if db_format != DB_FORMAT {
-            make_pre_bump_db(db_path)?;
+        let manifest = get_manifest(&conn)?;
+        if manifest.db_format != DB_FORMAT {
+            match conn.close() {
+                Ok(_) => Ok(()),
+                Err((c, e)) => Err(e),
+            }.chain_err(|| format!("Unable to close database at: {:?}", db_path))?;
+            remove_old_db(db_path)?;
             let new_conn = Connection::open(db_path)
                 .chain_err(|| format!("Failed to recreate new database at: {:?}", db_path))?;
-            create_db(&new_conn)?;
+            create_db(&new_conn, version, name, content_url, version_url, format)?;
             new_conn
         } else {
             conn
@@ -963,7 +996,7 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
                                version_url,
                                format)?;
 
-    chroot_to_db(chroot, &chroot_config, &db, version)?;
+    chroot_to_db(chroot, &chroot_config, &db, version, previous_version, format, db_path)?;
 
     Ok(())
 }
