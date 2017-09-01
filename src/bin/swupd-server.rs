@@ -17,7 +17,6 @@ extern crate futures_cpupool;
 extern crate log;
 extern crate memmap;
 extern crate nix;
-extern crate rayon;
 extern crate ring;
 extern crate rusqlite;
 #[macro_use]
@@ -31,7 +30,6 @@ use errors::*;
 use futures::Future;
 use futures_cpupool::{CpuFuture, CpuPool};
 use memmap::{Mmap, Protection};
-use rayon::prelude::*;
 use ring::digest;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -197,65 +195,65 @@ fn get_matches<'a>(app: &'a App) -> ArgMatches<'a> {
         .subcommands(vec![SubCommand::with_name("release")
                               .about("make release")
                               .arg(Arg::with_name("chroot")
-                                  .short("c")
-                                  .long("chroot")
-                                  .help("path to os content chroot")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("c")
+                                       .long("chroot")
+                                       .help("path to os content chroot")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("chrootconfig")
-                                  .short("m")
-                                  .long("chrootconfig")
-                                  .help("path to os content chroot config file")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("m")
+                                       .long("chrootconfig")
+                                       .help("path to os content chroot config file")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("version")
-                                  .short("v")
-                                  .long("version")
-                                  .help("release version to create")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("v")
+                                       .long("version")
+                                       .help("release version to create")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("previousversion")
-                                  .short("p")
-                                  .long("previousversion")
-                                  .help("previous version to update")
-                                  .required(false)
-                                  .takes_value(true))
+                                       .short("p")
+                                       .long("previousversion")
+                                       .help("previous version to update")
+                                       .required(false)
+                                       .takes_value(true))
                               .arg(Arg::with_name("name")
-                                  .short("n")
-                                  .long("name")
-                                  .help("os name")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("n")
+                                       .long("name")
+                                       .help("os name")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("contenturl")
-                                  .short("C")
-                                  .long("contenturl")
-                                  .help("os content url")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("C")
+                                       .long("contenturl")
+                                       .help("os content url")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("versionurl")
-                                  .short("V")
-                                  .long("versionurl")
-                                  .help("os version url")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("V")
+                                       .long("versionurl")
+                                       .help("os version url")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("format")
-                                  .short("f")
-                                  .long("format")
-                                  .help("os format version")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("f")
+                                       .long("format")
+                                       .help("os format version")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("database")
-                                  .short("d")
-                                  .long("database")
-                                  .help("path to database file")
-                                  .required(true)
-                                  .takes_value(true))
+                                       .short("d")
+                                       .long("database")
+                                       .help("path to database file")
+                                       .required(true)
+                                       .takes_value(true))
                               .arg(Arg::with_name("certpath")
-                                  .short("t")
-                                  .long("certpath")
-                                  .help("path to certificate file")
-                                  .required(true)
-                                  .takes_value(true))])
+                                       .short("t")
+                                       .long("certpath")
+                                       .help("path to certificate file")
+                                       .required(true)
+                                       .takes_value(true))])
         .get_matches()
 }
 
@@ -271,10 +269,12 @@ fn get_path_objects<'a>(db: &Connection,
     let query = format!("SELECT id, path, path_type, parent, update_version, \
                          disk_size, download_size, hash, status FROM path_objects WHERE {}",
                         checks.join(" AND "));
-    let mut stmt = db.prepare(&query)
-        .chain_err(|| format!("Error creation get path_object statement {}", &query))?;
-    let mut rows = stmt.query(&[])
-        .chain_err(|| format!("Error running get path_object statement {}", &query))?;
+    let mut stmt =
+        db.prepare(&query)
+            .chain_err(|| format!("Error creation get path_object statement {}", &query))?;
+    let mut rows =
+        stmt.query(&[])
+            .chain_err(|| format!("Error running get path_object statement {}", &query))?;
     let mut paths: Vec<PathObject> = Vec::new();
     while let Some(rrow) = rows.next() {
         let row = rrow.chain_err(|| "Error reading path_object query row")?;
@@ -310,10 +310,12 @@ fn get_package_objects<'a>(db: &Connection,
     let query = format!("SELECT id, name, update_version, package_version, disk_size, \
                          download_size, status FROM path_objects WHERE {}",
                         checks.join(" AND "));
-    let mut stmt = db.prepare(&query)
-        .chain_err(|| format!("Error creation get package_object statement {}", &query))?;
-    let mut rows = stmt.query(&[])
-        .chain_err(|| format!("Error running get package_object statement {}", &query))?;
+    let mut stmt =
+        db.prepare(&query)
+            .chain_err(|| format!("Error creation get package_object statement {}", &query))?;
+    let mut rows =
+        stmt.query(&[])
+            .chain_err(|| format!("Error running get package_object statement {}", &query))?;
     let mut packages: Vec<PackageObject> = Vec::new();
     while let Some(rrow) = rows.next() {
         let row = rrow.chain_err(|| "Error reading package_object query row")?;
@@ -347,10 +349,12 @@ fn get_bundle_objects<'a>(db: &Connection,
     let query = format!("SELECT id, name, update_version, \
                          disk_size, download_size, status FROM bundle_objects WHERE {}",
                         checks.join(" AND "));
-    let mut stmt = db.prepare(&query)
-        .chain_err(|| format!("Error creation get bundle_object statement {}", &query))?;
-    let mut rows = stmt.query(&[])
-        .chain_err(|| format!("Error running get bundle_object statement {}", &query))?;
+    let mut stmt =
+        db.prepare(&query)
+            .chain_err(|| format!("Error creation get bundle_object statement {}", &query))?;
+    let mut rows =
+        stmt.query(&[])
+            .chain_err(|| format!("Error running get bundle_object statement {}", &query))?;
     let mut bundles: Vec<BundleObject> = Vec::new();
     while let Some(rrow) = rows.next() {
         let row = rrow.chain_err(|| "Error reading bundle_object query row")?;
@@ -419,22 +423,25 @@ fn add_path_packages(chroot_config: &ChrootConfig, db: &Connection, version: i64
         let mut stmt_inc =
             db.prepare(&format!("SELECT id FROM path_objects WHERE path in ('{}') AND \
                                    update_version = :version",
-                                  paths))
+                                 paths))
                 .chain_err(|| "Unable to create statement for adding path and package relations")?;
         let mut pkg_id_rows =
-            stmt_pkg.query_map_named(&[(":name", &package.name), (":version", &vstring)],
+            stmt_pkg
+                .query_map_named(&[(":name", &package.name), (":version", &vstring)],
                                  |row: &rusqlite::Row| -> i64 { row.get(0) })
                 .chain_err(|| {
-                    format!("Unable to run query to get id for bundle {}", &package.name)
-                })?;
-        let pkg_id = pkg_id_rows.nth(0)
+                               format!("Unable to run query to get id for bundle {}", &package.name)
+                           })?;
+        let pkg_id = pkg_id_rows
+            .nth(0)
             .ok_or("Invalid DB")?
             .chain_err(|| {
-                format!("Package {} version {} missing after insert",
-                        &package.name,
-                        &vstring)
-            })?;
-        let rows = stmt_inc.query_map_named(&[(":version", &vstring)],
+                           format!("Package {} version {} missing after insert",
+                                   &package.name,
+                                   &vstring)
+                       })?;
+        let rows = stmt_inc
+            .query_map_named(&[(":version", &vstring)],
                              |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| "Unable to run query to get ids for adding bundle packages")?;
 
@@ -453,9 +460,9 @@ fn add_path_packages(chroot_config: &ChrootConfig, db: &Connection, version: i64
         inserts.push("COMMIT;".to_string());
         db.execute_batch(&inserts.join(""))
             .chain_err(|| {
-                format!("Failed to add path and package relations for {} to db",
-                        &package.name)
-            })?;
+                           format!("Failed to add path and package relations for {} to db",
+                                   &package.name)
+                       })?;
     }
     Ok(())
 }
@@ -463,10 +470,9 @@ fn add_path_packages(chroot_config: &ChrootConfig, db: &Connection, version: i64
 // Update packages with their required packages
 fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: i64) -> Result<()> {
     let vstring = version.to_string();
-    let mut stmt_pkg =
-        db.prepare("SELECT id FROM package_objects WHERE name = :name AND update_version = \
+    let mut stmt_pkg = db.prepare("SELECT id FROM package_objects WHERE name = :name AND update_version = \
                       :version")
-            .chain_err(|| "Unable to create statement for adding package requires")?;
+        .chain_err(|| "Unable to create statement for adding package requires")?;
 
     for package in &chroot_config.packages {
         if package.requires.len() == 0 {
@@ -477,23 +483,25 @@ fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: 
         let mut stmt_req =
             db.prepare(&format!("SELECT id FROM package_objects WHERE name in ('{}') AND \
                                    update_version = :version",
-                                  names))
+                                 names))
                 .chain_err(|| "Unable to create statement for adding package requires")?;
-        let mut pkg_id_rows =
-            stmt_pkg.query_map_named(&[(":name", &package.name), (":version", &vstring)],
-                                 |row: &rusqlite::Row| -> i64 { row.get(0) })
-                .chain_err(|| {
-                    format!("Unable to run query to get id for package {}",
-                            &package.name)
-                })?;
-        let pkg_id = pkg_id_rows.nth(0)
+        let mut pkg_id_rows = stmt_pkg
+            .query_map_named(&[(":name", &package.name), (":version", &vstring)],
+                             |row: &rusqlite::Row| -> i64 { row.get(0) })
+            .chain_err(|| {
+                           format!("Unable to run query to get id for package {}",
+                                   &package.name)
+                       })?;
+        let pkg_id = pkg_id_rows
+            .nth(0)
             .ok_or("Invalid DB")?
             .chain_err(|| {
-                format!("Package {} version {} missing after insert",
-                        &package.name,
-                        &vstring)
-            })?;
-        let rows = stmt_req.query_map_named(&[(":version", &vstring)],
+                           format!("Package {} version {} missing after insert",
+                                   &package.name,
+                                   &vstring)
+                       })?;
+        let rows = stmt_req
+            .query_map_named(&[(":version", &vstring)],
                              |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| "Unable to run query to get ids for adding package requires")?;
 
@@ -512,9 +520,9 @@ fn add_package_requires(chroot_config: &ChrootConfig, db: &Connection, version: 
         inserts.push("COMMIT;".to_string());
         db.execute_batch(&inserts.join(""))
             .chain_err(|| {
-                format!("Failed to add packages requirements for {} to db",
-                        &package.name)
-            })?;
+                           format!("Failed to add packages requirements for {} to db",
+                                   &package.name)
+                       })?;
     }
     Ok(())
 }
@@ -536,14 +544,16 @@ fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: i
                                                          (":version", &vstring)],
                                                        |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| format!("Unable to run query to get id for bundle {}", &bundle.name))?;
-        let bdl_id = bdl_id_rows.nth(0)
+        let bdl_id = bdl_id_rows
+            .nth(0)
             .ok_or("Invalid DB")?
             .chain_err(|| {
-                format!("Bundle {} version {} missing after insert",
-                        &bundle.name,
-                        &vstring)
-            })?;
-        let rows = stmt_inc.query_map_named(&[(":version", &vstring)],
+                           format!("Bundle {} version {} missing after insert",
+                                   &bundle.name,
+                                   &vstring)
+                       })?;
+        let rows = stmt_inc
+            .query_map_named(&[(":version", &vstring)],
                              |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| "Unable to run query to get ids for adding bundle packages")?;
 
@@ -562,9 +572,9 @@ fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: i
         inserts.push("COMMIT;".to_string());
         db.execute_batch(&inserts.join(""))
             .chain_err(|| {
-                format!("Failed to add packages and bundle relations for {} to db",
-                        &bundle.name)
-            })?;
+                           format!("Failed to add packages and bundle relations for {} to db",
+                                   &bundle.name)
+                       })?;
     }
     Ok(())
 }
@@ -572,10 +582,9 @@ fn add_package_bundles(chroot_config: &ChrootConfig, db: &Connection, version: i
 // Update bundles with bundles they include
 fn add_bundle_includes(chroot_config: &ChrootConfig, db: &Connection, version: i64) -> Result<()> {
     let vstring = version.to_string();
-    let mut stmt_bdl =
-        db.prepare("SELECT id FROM bundle_objects WHERE name = :name AND update_version = \
+    let mut stmt_bdl = db.prepare("SELECT id FROM bundle_objects WHERE name = :name AND update_version = \
                       :version")
-            .chain_err(|| "Unable to create statement for adding bundle includes")?;
+        .chain_err(|| "Unable to create statement for adding bundle includes")?;
 
     for bundle in &chroot_config.bundles {
         if bundle.includes.len() == 0 {
@@ -586,20 +595,22 @@ fn add_bundle_includes(chroot_config: &ChrootConfig, db: &Connection, version: i
         let mut stmt_inc =
             db.prepare(&format!("SELECT id FROM bundle_objects WHERE name in ('{}') AND \
                                    update_version = :version",
-                                  names))
+                                 names))
                 .chain_err(|| "Unable to create statement for adding bundle includes")?;
         let mut bdl_id_rows = stmt_bdl.query_map_named(&[(":name", &bundle.name),
                                                          (":version", &vstring)],
                                                        |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| format!("Unable to run query to get id for bundle {}", &bundle.name))?;
-        let bdl_id = bdl_id_rows.nth(0)
+        let bdl_id = bdl_id_rows
+            .nth(0)
             .ok_or("Invalid DB")?
             .chain_err(|| {
-                format!("Bundle {} version {} missing after insert",
-                        &bundle.name,
-                        &vstring)
-            })?;
-        let rows = stmt_inc.query_map_named(&[(":version", &vstring)],
+                           format!("Bundle {} version {} missing after insert",
+                                   &bundle.name,
+                                   &vstring)
+                       })?;
+        let rows = stmt_inc
+            .query_map_named(&[(":version", &vstring)],
                              |row: &rusqlite::Row| -> i64 { row.get(0) })
             .chain_err(|| "Unable to run query to get ids for adding bundle includes")?;
 
@@ -652,17 +663,18 @@ impl Hashable for DirEntry {
 }
 
 fn get_symbolic_link_hash(path: &Path) -> Result<digest::Digest> {
-    let target =
-        std::fs::read_link(path).chain_err(|| format!("Unable to read symlink {:?}", path))?;
+    let target = std::fs::read_link(path)
+        .chain_err(|| format!("Unable to read symlink {:?}", path))?;
     let mut ctx = digest::Context::new(&digest::SHA256);
 
     ctx.update(b"L");
 
-    ctx.update(target.to_str()
-        .ok_or(format!("Unable to convert symlink {:?} target path {:?} to string",
-                       path,
-                       target))?
-        .as_bytes());
+    ctx.update(target
+                   .to_str()
+                   .ok_or(format!("Unable to convert symlink {:?} target path {:?} to string",
+                                  path,
+                                  target))?
+                   .as_bytes());
 
     Ok(ctx.finish())
 }
@@ -709,7 +721,8 @@ fn add_entry(path: &Path,
              version: i64)
              -> Result<()> {
     let hash = dirent.get_hash()?;
-    let meta = dirent.metadata()
+    let meta = dirent
+        .metadata()
         .chain_err(|| format!("Unable to get metadata for {:?}", dirent.path()))?;
     let path_type = if dirent.file_type().is_symlink() {
         PathType::SymbolicLink
@@ -788,7 +801,8 @@ fn create_db(db: &Connection,
              name: &str,
              content_url: &str,
              version_url: &str,
-             format: i64) -> Result<()> {
+             format: i64)
+             -> Result<()> {
     db.execute_batch("BEGIN; PRAGMA foreign_keys = ON; \
                       \
                       CREATE TABLE manifests ( \
@@ -882,24 +896,29 @@ fn create_db(db: &Connection,
 
 fn make_pre_bump_db(db_path: &Path) -> Result<()> {
     let pre_bump: &Path = &db_path.with_extension("pre-bump");
-    fs::rename(db_path, pre_bump).chain_err(|| format!("Failed to move db to pre-bump file at: {:?}", &pre_bump))?;
+    fs::rename(db_path, pre_bump)
+        .chain_err(|| format!("Failed to move db to pre-bump file at: {:?}", &pre_bump))?;
     Ok(())
 }
 
 fn remove_old_db(db_path: &Path) -> Result<()> {
-    fs::remove_file(db_path).chain_err(|| format!("Failed to remove old db file at: {:?}", db_path))?;
+    fs::remove_file(db_path)
+        .chain_err(|| format!("Failed to remove old db file at: {:?}", db_path))?;
     Ok(())
 }
 
 fn get_manifest(db: &Connection) -> Result<Manifest> {
     db.query_row(&format!("SELECT * FROM manifests"), &[], |row| {
-        Manifest { version: row.get(0),
-                   name: row.get(1),
-                   content_url: row.get(2),
-                   version_url: row.get(3),
-                   db_format: row.get(4),
-                   format: row.get(5) }
-    }).chain_err(|| format!("Unable to run query to get db_format"))
+            Manifest {
+                version: row.get(0),
+                name: row.get(1),
+                content_url: row.get(2),
+                version_url: row.get(3),
+                db_format: row.get(4),
+                format: row.get(5),
+            }
+        })
+        .chain_err(|| format!("Unable to run query to get db_format"))
 }
 
 fn get_db_connection(db_path: &Path,
@@ -923,17 +942,20 @@ fn get_db_connection(db_path: &Path,
         if !db_path.exists() {
             bail!("Missing db file {:?}", db_path);
         }
-        let conn = Connection::open(db_path)
-            .chain_err(|| format!("Failed to open existing database at: {:?}", db_path))?;
+        let conn =
+            Connection::open(db_path)
+                .chain_err(|| format!("Failed to open existing database at: {:?}", db_path))?;
         let manifest = get_manifest(&conn)?;
         if manifest.db_format != DB_FORMAT {
             match conn.close() {
-                Ok(_) => Ok(()),
-                Err((c, e)) => Err(e),
-            }.chain_err(|| format!("Unable to close database at: {:?}", db_path))?;
+                    Ok(_) => Ok(()),
+                    Err((c, e)) => Err(e),
+                }
+                .chain_err(|| format!("Unable to close database at: {:?}", db_path))?;
             remove_old_db(db_path)?;
-            let new_conn = Connection::open(db_path)
-                .chain_err(|| format!("Failed to recreate new database at: {:?}", db_path))?;
+            let new_conn =
+                Connection::open(db_path)
+                    .chain_err(|| format!("Failed to recreate new database at: {:?}", db_path))?;
             create_db(&new_conn, version, name, content_url, version_url, format)?;
             new_conn
         } else {
@@ -959,13 +981,14 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
     let chroot = Path::new(matches.value_of("chroot").unwrap());
     let chroot_config_path = Path::new(matches.value_of("chrootconfig").unwrap());
     let chroot_config = load_chroot_config(&chroot_config_path)?;
-    let version = matches.value_of("version")
+    let version = matches
+        .value_of("version")
         .unwrap()
         .parse::<i64>()
         .chain_err(|| {
-            format!("Unable to parse version from: {}",
-                    matches.value_of("version").unwrap())
-        })?;
+                       format!("Unable to parse version from: {}",
+                               matches.value_of("version").unwrap())
+                   })?;
     let previous_version = match matches.value_of("previousversion") {
         None => 0,
         Some(s) => {
@@ -976,13 +999,14 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
     let name = matches.value_of("name").unwrap();
     let content_url = matches.value_of("contenturl").unwrap();
     let version_url = matches.value_of("versionurl").unwrap();
-    let format = matches.value_of("format")
+    let format = matches
+        .value_of("format")
         .unwrap()
         .parse::<i64>()
         .chain_err(|| {
-            format!("Unable to parse format from: {}",
-                    matches.value_of("format").unwrap())
-        })?;
+                       format!("Unable to parse format from: {}",
+                               matches.value_of("format").unwrap())
+                   })?;
     let db_path = Path::new(matches.value_of("database").unwrap());
     let cert_path = Path::new(matches.value_of("certpath").unwrap());
 
@@ -996,7 +1020,13 @@ fn run_release(matches: &ArgMatches) -> Result<()> {
                                version_url,
                                format)?;
 
-    chroot_to_db(chroot, &chroot_config, &db, version, previous_version, format, db_path)?;
+    chroot_to_db(chroot,
+                 &chroot_config,
+                 &db,
+                 version,
+                 previous_version,
+                 format,
+                 db_path)?;
 
     Ok(())
 }
@@ -1014,7 +1044,7 @@ fn process_command(matches: ArgMatches) -> Result<()> {
 
 fn main() {
     env_logger::init().unwrap();
-    if nix::unistd::getuid() != 0 {
+    if nix::unistd::getuid().is_root() {
         error!("swupd-server must be run as root");
         ::std::process::exit(-1);
     }
